@@ -1,0 +1,11 @@
+# Secrets — never commit
+.env
+
+# Local runtime state — machine-specific, not source
+raybot_config.json
+grow_log.txt
+solutions/
+
+# Python
+__pycache__/
+*.pyc
