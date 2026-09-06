@@ -4,6 +4,7 @@
 # Local runtime state — machine-specific, not source
 raybot_config.json
 grow_log.txt
+dashboard_run.log
 solutions/
 
 # Python

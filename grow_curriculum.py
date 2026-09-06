@@ -21,6 +21,11 @@ BUCKET_CYCLE = ["easy", "medium", "hard"]
 # per category to a generous multiple of what's needed.
 MAX_ATTEMPT_MULTIPLIER = 4
 
+# The "medline:" categories are a hand-authored track with a deliberate
+# progression (see seed_medline_track.py). Topping them up with generic
+# generated problems would break that ordering, so they're left alone.
+SKIP_CATEGORY_PREFIXES = ("medline:",)
+
 
 def main():
     db.init_db()
@@ -28,6 +33,9 @@ def main():
     failed = 0
     start = time.monotonic()
     for cat in db.get_categories():
+        if cat["name"].startswith(SKIP_CATEGORY_PREFIXES):
+            print(f"{cat['name']}: hand-authored track, skipping", flush=True)
+            continue
         current = len(db.all_problems(category=cat["name"]))
         target_needed = max(0, TARGET_PER_CATEGORY - current)
         if target_needed == 0:
@@ -71,8 +79,8 @@ def main():
 
     print(f"\nDone. Added {added} new problems, {failed} failed attempts, {(time.monotonic() - start) / 60:.1f} minutes total.", flush=True)
     print("\nFinal category counts:", flush=True)
-    for c in db.category_stats():
-        print(f"  {c['name']}: {c['total']}", flush=True)
+    for c in db.get_categories():
+        print(f"  {c['name']}: {len(db.all_problems(category=c['name']))}", flush=True)
 
 
 if __name__ == "__main__":
