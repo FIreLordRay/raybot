@@ -1,9 +1,9 @@
 """Raybot: Discord front-end for the Python practice curriculum.
 
 Shares the same curriculum.db database as the practice.py CLI tool and the
-dashboard (all in this same folder). The curriculum auto-grows: when a
-category/difficulty runs out of curated problems, Ollama generates (and
-self-verifies) a new one.
+dashboard (imported directly from the python-practice folder — see
+PRACTICE_DIR below). The curriculum auto-grows: when a category/difficulty
+runs out of curated problems, Ollama generates (and self-verifies) a new one.
 
 Commands:
     !quiz            Post a race-mode problem in this channel. First person to
@@ -14,22 +14,16 @@ Commands:
                       by difficulty and/or category) and tracks your score over time.
     !setquizchannel   (Manage Server permission) Makes this channel the one
                       that gets a daily auto-posted race question.
-    !progress         Shows YOUR OWN curriculum progress/streak.
-    !categories       Lists categories and YOUR OWN per-category progress.
-    !leaderboard      Top solvers server-wide, ranked by distinct problems solved.
-    !badges           YOUR OWN earned/locked achievement badges.
+    !progress         Shows shared curriculum progress/streak.
+    !categories       Lists categories and per-category progress.
+    !leaderboard      Top solvers, ranked by distinct problems solved.
+    !badges           Your earned/locked achievement badges.
     !raybothelp       Lists these commands.
-
-Every person who uses this bot gets their own progress, streak, and badges —
-solving a problem in a race or personal quiz only marks it solved for you,
-not for everyone. The one genuinely shared thing is race mode's problem pool
-(once anyone wins a race with a problem, !quiz won't offer it again) and the
-leaderboard (which is deliberately everyone's numbers side by side).
 
 Setup required before running:
     1. In the Discord Developer Portal, enable the "MESSAGE CONTENT INTENT"
        privileged gateway intent for this bot.
-    2. Add DISCORD_TOKEN=<your bot token> to .env in this folder
+    2. Add DISCORD_TOKEN=<your bot token> to PythonProject/.env
     3. Invite the bot to your server with Send Messages / Read Message
        History / Add Reactions permissions.
     4. Run: python discord_raybot.py   (keep this process running)
@@ -45,10 +39,10 @@ with people you trust.
 import asyncio
 import concurrent.futures
 import datetime
-import functools
 import json
 import os
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -56,11 +50,14 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-import badges  # achievement badges — shared with dashboard.py
-import db
-import generator
-import grading  # extract_code, exec_and_test — shared with dashboard.py
-import tutor  # ask_raybot, explain_failure — shared with dashboard.py
+# --- Shared curriculum + grading: import directly from the python-practice folder ---
+PRACTICE_DIR = Path(r"C:\Users\rayra\Documents\python-practice")
+sys.path.insert(0, str(PRACTICE_DIR))
+import badges  # noqa: E402  (achievement badges — shared with dashboard.py)
+import db  # noqa: E402
+import generator  # noqa: E402
+import grading  # noqa: E402  (extract_code, exec_and_test — shared with dashboard.py)
+import tutor  # noqa: E402  (ask_raybot, explain_failure — shared with dashboard.py)
 
 db.init_db()
 
@@ -115,12 +112,10 @@ async def explain_failure_async(problem, code, passed, total):
         return "(Raybot's explanation timed out — Ollama may be slow or busy right now.)"
 
 
-async def next_or_generate_async(user_name=None, category=None, bucket="medium"):
-    """Runs generator.next_or_generate() (can call Ollama) off the event loop.
-    Leave user_name None for the shared race pool; pass it for a personal pool."""
+async def next_or_generate_async(category=None, bucket="medium"):
+    """Runs generator.next_or_generate() (can call Ollama) off the event loop."""
     loop = asyncio.get_running_loop()
-    fn = functools.partial(generator.next_or_generate, user_name=user_name, category=category, bucket=bucket)
-    future = loop.run_in_executor(EXECUTOR, fn)
+    future = loop.run_in_executor(EXECUTOR, generator.next_or_generate, category, bucket)
     return await future
 
 
@@ -160,7 +155,7 @@ async def cmd_quiz(ctx):
         problem = db.problem_by_id(active_races[ctx.channel.id]["problem_id"])
         await ctx.send(f"There's already a race running here: **{problem['title']}**. Solve that one first!")
         return
-    problem_id = db.next_unraced()
+    problem_id = db.next_unsolved()
     if problem_id is None:
         await ctx.send("Curriculum's exhausted — generating a new problem with Ollama (may take a minute)...")
         problem_id, _ = await next_or_generate_async()
@@ -201,7 +196,7 @@ async def cmd_firelordray(ctx, difficulty: str = None, category: str = None):
     else:
         pool = db.all_problems()
 
-    solved = db.get_solved_ids(str(author))
+    solved = db.get_solved_ids()
     unsolved = [p for p in pool if p["id"] not in solved]
     quiz_problems = unsolved[:5]
     if len(quiz_problems) < 5:
@@ -255,17 +250,17 @@ async def cmd_firelordray(ctx, difficulty: str = None, category: str = None):
             await author.send(f"{error} ({passed}/{total} tests passed)")
         elif passed == total:
             score += 1
-            before_badges = badges.earned_ids(str(author))
+            before_badges = badges.earned_ids()
             db.mark_solved(problem["id"], user_name=str(author), mode="personal_quiz")
             await author.send(f"{tutor.praise()} ({passed}/{total} tests passed)")
-            for badge in badges.newly_earned(before_badges, str(author)):
+            for badge in badges.newly_earned(before_badges):
                 await author.send(f"{badge['emoji']} **New badge unlocked: {badge['name']}** — {badge['desc']}")
         else:
             explanation = await explain_failure_async(problem, code, passed, total)
             await author.send(f"Not quite — {passed}/{total} tests passed.\n\n{explanation}")
 
     db.record_quiz_attempt(score, 5, difficulty=label, category=category, user_name=str(author))
-    same_bucket_past = db.quiz_history_by_bucket(label, key="difficulty", user_name=str(author))[:-1]  # exclude the one we just recorded
+    same_bucket_past = db.quiz_history_by_bucket(label, key="difficulty")[:-1]  # exclude the one we just recorded
     past_scores = [h["score"] / h["total"] for h in same_bucket_past if h.get("total")]
 
     comparison = ""
@@ -298,16 +293,15 @@ async def cmd_setquizchannel(ctx):
 
 @bot.command(name="progress")
 async def cmd_progress(ctx):
-    user_name = str(ctx.author)
     total = len(db.all_problems())
-    solved = len(db.get_solved_ids(user_name))
-    streak = db.get_streak(user_name)
-    await ctx.send(f"{ctx.author.mention}'s progress: {solved}/{total} solved. Current streak: {streak} day(s).")
+    solved = len(db.get_solved_ids())
+    streak = db.get_streak()
+    await ctx.send(f"Curriculum progress: {solved}/{total} solved. Current streak: {streak} day(s).")
 
 
 @bot.command(name="categories")
 async def cmd_categories(ctx):
-    stats = db.category_stats(str(ctx.author))
+    stats = db.category_stats()
     if not stats:
         await ctx.send("No categories yet.")
         return
@@ -333,9 +327,8 @@ async def cmd_leaderboard(ctx):
 
 @bot.command(name="badges")
 async def cmd_badges(ctx):
-    user_name = str(ctx.author)
-    earned = badges.earned_badges(user_name)
-    locked = badges.locked_badges(user_name)
+    earned = badges.earned_badges()
+    locked = badges.locked_badges()
     embed = discord.Embed(title="🎖️ Badges", color=discord.Color.purple())
     if earned:
         embed.add_field(
@@ -393,7 +386,7 @@ async def on_message(message):
             return
         if passed == total:
             elapsed = time.monotonic() - race["started"]
-            before_badges = badges.earned_ids(str(message.author))
+            before_badges = badges.earned_ids()
             db.mark_solved(problem["id"], user_name=str(message.author), mode="race")
             del active_races[message.channel.id]
 
@@ -408,7 +401,7 @@ async def on_message(message):
             embed.set_footer(text="Run !quiz for the next one.")
             await message.channel.send(embed=embed)
 
-            for badge in badges.newly_earned(before_badges, str(message.author)):
+            for badge in badges.newly_earned(before_badges):
                 await message.channel.send(
                     f"{badge['emoji']} {message.author.mention} just unlocked **{badge['name']}** — {badge['desc']}"
                 )
@@ -435,7 +428,7 @@ async def daily_quiz_task():
         config["last_auto_post_date"] = today
         save_config(config)
         return
-    problem_id = db.next_unraced()
+    problem_id = db.next_unsolved()
     if problem_id is None:
         problem_id, _ = await next_or_generate_async()
     if problem_id is None:
