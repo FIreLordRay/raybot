@@ -1,12 +1,22 @@
 # Raybot — a self-hosted Python learning system
 
-Raybot is a daily Python practice system with three front ends (a terminal
-tool, a Discord bot, and a local web dashboard) sharing one SQLite curriculum
+Raybot is a daily Python practice system built around one SQLite curriculum
 that **grows itself**: whenever you run out of problems in a category or
 difficulty, a local LLM (via [Ollama](https://ollama.com)) writes a new one —
 and has to prove its own reference solution actually passes the tests it
 wrote before that problem is ever shown to you. Nothing auto-generated reaches
 a learner unverified.
+
+There are six ways to run it, all on the same machine, all optional:
+
+| Run this | Port | What it is |
+|---|---|---|
+| `practice.py` | — | terminal tool |
+| `discord_raybot.py` | — | Discord bot |
+| `dashboard.py` | 5001 | web dashboard for the curriculum |
+| `run_agent.py` | 5003 | `raybot_agent` alone — a tool-using chat agent |
+| `ray.py` | 5000 | the agent as the front page, with the dashboard's stats/problem browser alongside it |
+| `raybot_showcase.py` | 5002 | a standalone, dependency-free page about what Raybot can do |
 
 Everything runs locally. No cloud API keys, no subscription, no data leaving
 your machine — the only "AI" cost is CPU time from your own Ollama instance.
@@ -61,6 +71,16 @@ flowchart TB
     tutor --> ollama
     generator -->|verified only| dbpy
     dbpy --> db
+
+    agent["raybot_agent\ntool-using chat loop"]
+    rayapp["ray.py\nagent + dashboard, one app"]
+    runagent["run_agent.py\nagent alone"]
+
+    runagent --> agent
+    rayapp --> agent
+    rayapp -.->|db.py, badges.py, grading.py, if present| dbpy
+    agent -->|run_python, get_progress,\nlist_categories, find_problem| dbpy
+    agent --> ollama
 ```
 
 ## Features
@@ -114,6 +134,42 @@ flowchart TB
   wins a race with a problem, it won't be offered again — but the winner
   still only gets credit in their own personal progress
 
+## The agent (`raybot_agent`)
+
+The front ends above all revolve around a fixed curriculum you solve. `raybot_agent`
+is a different shape: a real tool-calling chat loop against Ollama. Ask it a
+question and it **runs tools instead of guessing** — `sum(range(11))` gets
+executed and reported as `55`, not estimated; "how am I doing" reads your
+actual `curriculum.db` state. Every tool call shows up in the transcript with
+its exact arguments and raw result, never hidden.
+
+| Tool | What it does |
+|---|---|
+| `run_python` | Executes a snippet and returns its output (or a bare trailing expression's value, so no `print()` is needed) |
+| `get_progress` | Solved count, percentage, streak, quizzes taken |
+| `list_categories` | Every category with its solved/total |
+| `find_problem` | Search problems by title or category |
+
+Three ways to reach it:
+- **`run_agent.py`** (port 5003) — the agent alone, nothing else
+- **`ray.py`** (port 5000) — the agent as the whole point of the app; the
+  dashboard's live stats, problem browser, and solve-and-grade view sit
+  alongside it, and every curriculum page gets an "Ask Ray" box wired to the
+  same agent with that problem as context
+- **imported directly** — `agent.run_turn()` has no Flask dependency:
+  ```python
+  from raybot_agent import run_turn
+  reply, trace, history = run_turn([], "What does 2**20 come to?")
+  ```
+
+Full detail — tool schemas, the denylist `run_python` runs code through, the
+5-round-trip cap, why it needs `llama3.2:3b` specifically and not plain
+`llama3` — is in [`raybot_agent/README.md`](raybot_agent/README.md).
+
+**`raybot_showcase.py`** (port 5002) is the odd one out: a static, no-database,
+no-Ollama-required page that just describes what the rest of this repo does.
+Useful for showing someone the idea without setting anything up first.
+
 ## Project layout
 
 Everything lives in one folder:
@@ -130,10 +186,19 @@ discord_raybot.py         Discord bot
 dashboard.py              Flask web dashboard
 grow_curriculum.py        batch script: top up every category to N problems
 migrate_to_multiuser.py   one-time migration this repo already ran (kept for reference/re-forks)
+raybot_agent/             the tool-using chat agent (agent.py, tools.py, web.py) — see its own README
+ray.py                    the agent as the front page, dashboard features alongside it, one port
+raybot_showcase.py        standalone presentation page, no database or Ollama required
+run_agent.py              entry point for raybot_agent's own web UI
 ```
 
 One folder, one `curriculum.db`, no cross-directory imports — every file
-just does `import db` and it resolves locally.
+just does `import db` and it resolves locally. The exception is `dashboard.py`,
+`ray.py`, and `discord_raybot.py`, which currently import `badges`/`db`/
+`generator`/`grading`/`tutor` from a hardcoded external path
+(`C:\Users\rayra\Documents\python-practice` on the machine this was built on)
+rather than the copies of those same files sitting right here — a known,
+not-yet-cleaned-up wrinkle if you clone this repo somewhere else.
 
 ## Setup
 
@@ -152,6 +217,15 @@ python dashboard.py          # open http://localhost:5001
 
 # Discord bot
 python discord_raybot.py
+
+# The agent alone (needs a tool-capable model: ollama pull llama3.2:3b)
+python run_agent.py          # open http://localhost:5003
+
+# The agent as the front page, dashboard features alongside it
+python ray.py                # open http://localhost:5000
+
+# Static showcase page — no Ollama or database required
+python raybot_showcase.py    # open http://localhost:5002
 ```
 
 To bulk-generate problems ahead of time instead of waiting for on-demand
@@ -188,3 +262,11 @@ and a timeout bounds runaway loops, but this is **not a sandbox**. The web
 dashboard only listens on `localhost`, so that's just you running your own
 code. The Discord race mode (`!quiz`) is open to anyone in the channel it's
 run in — only enable it in servers with people you actually trust.
+
+The agent's `run_python` tool is a different risk profile from the above: it
+executes code the **model** chose to write, not code a person typed, using
+the same denylist-plus-timeout approach (not a sandbox there either — a
+runaway loop it hands `run_python` keeps a core busy on a daemon thread until
+the process exits, since Python can't forcibly kill a thread). Run the agent,
+`ray.py`, and `run_agent.py` on `localhost` for yourself; don't expose any of
+them.
