@@ -8,14 +8,17 @@ recorded to the same quiz_history as Discord's !firelordray. The curriculum
 auto-grows: if a category/difficulty runs out, Ollama generates a new problem
 and verifies it before you ever see it.
 
-Run it and open http://localhost:5001 in a browser:
+Run it and open http://localhost:5001 in a browser (or, from another device
+on the same network, http://<this machine's LAN IP>:5001):
 
     python dashboard.py
 
 Security note: like Raybot's !quiz/!firelordray, the quiz here executes
-whatever code you submit to grade it. Since this only listens on localhost
-(nothing outside your machine can reach it), that's just you running your own
-code — no different from running practice.py test yourself.
+whatever code you submit to grade it, with only a denylist screening it --
+not a sandbox. This now listens on 0.0.0.0, so it is reachable from every
+device on your local network, not just this machine: only run it while you
+mean to share it, and only on a network where everyone who can reach it is
+someone you trust to run code on this box.
 """
 
 import random
@@ -36,7 +39,7 @@ import tutor  # noqa: E402  (ask_raybot, explain_failure — shared with discord
 db.init_db()
 
 app = Flask(__name__)
-app.secret_key = "raybot-dashboard-local-only"  # only ever served on localhost
+app.secret_key = "raybot-dashboard-local-only"  # LAN-reachable now, still not internet-facing
 
 BUCKETS = ["easy", "medium", "hard"]
 QUIZ_LENGTH = 5
@@ -1689,4 +1692,8 @@ def quiz_result():
 
 
 if __name__ == "__main__":
-    app.run(port=5001, debug=False)
+    # 0.0.0.0: reachable from other devices on your LAN, not just this machine.
+    # Grading executes submitted code with only a denylist -- not a sandbox --
+    # so only run this bound like this while you actually mean to share it,
+    # on a network where everyone who can reach it is someone you trust.
+    app.run(host="0.0.0.0", port=5001, debug=False)

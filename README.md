@@ -7,13 +7,15 @@ and has to prove its own reference solution actually passes the tests it
 wrote before that problem is ever shown to you. Nothing auto-generated reaches
 a learner unverified.
 
-There are six ways to run it, all on the same machine, all optional:
+There are six ways to run it, all optional. Five listen on `localhost` only;
+`dashboard.py` listens on your whole local network while it's running (see
+Security notes):
 
 | Run this | Port | What it is |
 |---|---|---|
 | `practice.py` | — | terminal tool |
 | `discord_raybot.py` | — | Discord bot |
-| `dashboard.py` | 5001 | web dashboard for the curriculum |
+| `dashboard.py` | 5001 | web dashboard for the curriculum — LAN-reachable (see Security notes) |
 | `run_agent.py` | 5003 | `raybot_agent` alone — a tool-using chat agent |
 | `ray.py` | 5000 | the agent as the front page, with the dashboard's stats/problem browser alongside it |
 | `raybot_showcase.py` | 5002 | a standalone, dependency-free page about what Raybot can do |
@@ -213,7 +215,7 @@ and — for the Discord bot — `discord.py` plus a bot token in a local `.env`
 python practice.py today
 
 # Web dashboard
-python dashboard.py          # open http://localhost:5001
+python dashboard.py          # open http://localhost:5001, or http://<lan-ip>:5001 from another device
 
 # Discord bot
 python discord_raybot.py
@@ -258,10 +260,13 @@ slots. Both get rejected before they'd ever reach a learner.
 Grading works by executing whatever code you (or a Discord user) submit —
 that's the only way to check it. A denylist blocks the most obviously
 dangerous patterns (file/network/process access, re-entering `eval`/`exec`)
-and a timeout bounds runaway loops, but this is **not a sandbox**. The web
-dashboard only listens on `localhost`, so that's just you running your own
-code. The Discord race mode (`!quiz`) is open to anyone in the channel it's
-run in — only enable it in servers with people you actually trust.
+and a timeout bounds runaway loops, but this is **not a sandbox**. `dashboard.py`
+binds to `0.0.0.0`, so it's reachable from every device on your local network
+(not the open internet — that would additionally need a router port-forward)
+while it's running: only run it when you mean to share it, and only on a
+network where everyone who can reach it is someone you'd trust to run code on
+this machine. The Discord race mode (`!quiz`) is open to anyone in the channel
+it's run in — only enable it in servers with people you actually trust.
 
 The agent's `run_python` tool is a different risk profile from the above: it
 executes code the **model** chose to write, not code a person typed, using
