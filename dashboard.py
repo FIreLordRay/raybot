@@ -18,91 +18,110 @@ whatever code you submit to grade it. Since this only listens on localhost
 code — no different from running practice.py test yourself.
 """
 
-import datetime
-import getpass
 import random
+import sys
 import threading
+from pathlib import Path
 
 from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
 
-import badges  # achievement badges — shared with discord_raybot.py
-import db
-import generator
-import grading
-import tutor  # ask_raybot, explain_failure — shared with discord_raybot.py
+PRACTICE_DIR = Path(r"C:\Users\rayra\Documents\python-practice")
+sys.path.insert(0, str(PRACTICE_DIR))
+import badges  # noqa: E402  (achievement badges — shared with discord_raybot.py)
+import db  # noqa: E402
+import generator  # noqa: E402
+import grading  # noqa: E402
+import tutor  # noqa: E402  (ask_raybot, explain_failure — shared with discord_raybot.py)
 
 db.init_db()
 
 app = Flask(__name__)
 app.secret_key = "raybot-dashboard-local-only"  # only ever served on localhost
-app.permanent_session_lifetime = datetime.timedelta(days=365)
 
 BUCKETS = ["easy", "medium", "hard"]
 QUIZ_LENGTH = 5
 GRADE_TIMEOUT_SECONDS = 5
-# Defaults to this machine's Windows login — the same identity practice.py
-# uses — so the CLI and dashboard share one identity for the primary user on
-# their own machine with zero setup. Anyone else (or a shared/borrowed
-# browser) can still pick their own name via the navbar widget.
-DEFAULT_USER_NAME = getpass.getuser()
-
-
-def get_user_name():
-    """Each browser gets its own lightweight identity (no password — just a
-    display name), stored in a long-lived session cookie. This is what makes
-    the dashboard usable by more than one person: everyone who opens it picks
-    a name once, and their solved/streak/badges stay separate from anyone
-    else's from then on."""
-    return session.get("user_name") or DEFAULT_USER_NAME
-
-
-def render_page(template, **context):
-    """Renders a page template, auto-filling user_name/streak/nav_active so
-    every route doesn't have to repeat that boilerplate."""
-    user_name = context.setdefault("user_name", get_user_name())
-    context.setdefault("nav_active", None)
-    context.setdefault("streak", db.get_streak(user_name))
-    return render_template_string(template, **context)
 
 STYLE = """
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
   :root {
-    --bg: #0d0c14;
-    --bg-alt: #1c1b2a;
-    --card: #16151f;
-    --card-border: #2a2838;
-    --text: #f0eef7;
-    --muted: #8f8ca3;
-    --accent: #7c6cf5;
-    --accent-dark: #6152d9;
-    --accent-soft: #251f47;
+    --bg: #100c0a;
+    --bg-alt: #241c16;
+    --card: #191310;
+    --card-border: #332a22;
+    --text: #f7f2ec;
+    --muted: #a09488;
+    --accent: #f59e0b;
+    --accent-dark: #d97706;
+    --accent-soft: #2e2410;
     --good: #34d399;
     --warn: #fbbf24;
     --bad: #f87171;
-    --navy: #241a44;
+    --ink: #0d0a08;
   }
   * { box-sizing: border-box; }
-  html { background: var(--bg); }
+  html { background: var(--bg); scroll-behavior: smooth; }
   body {
     margin: 0;
     min-height: 100vh;
-    background: var(--bg);
+    isolation: isolate;
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(circle at center, rgba(255,255,255,0.05) 1px, transparent 1px),
+      radial-gradient(ellipse 70% 62% at 4% 100%, rgba(245,158,11,0.42) 0%, transparent 82%),
+      radial-gradient(ellipse 64% 56% at 34% 96%, rgba(251,146,60,0.34) 0%, transparent 82%),
+      radial-gradient(ellipse 66% 58% at 100% 18%, rgba(244,63,94,0.30) 0%, transparent 82%),
+      radial-gradient(ellipse 50% 46% at 12% 0%, rgba(251,191,36,0.24) 0%, transparent 82%),
+      radial-gradient(circle at 50% 120%, #1A1210 0%, #100C0A 48%, #080605 100%);
+    background-size: 4px 4px, auto, auto, auto, auto, auto;
+    background-repeat: repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+    background-attachment: fixed;
     color: var(--text);
-    font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: "Plus Jakarta Sans", -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
+  ::selection { background: var(--accent); color: #1a1002; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 999px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent-dark); }
+  * { scrollbar-color: var(--card-border) transparent; scrollbar-width: thin; }
+
+  #smooth-cursor {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 22px;
+    height: 22px;
+    pointer-events: none;
+    z-index: 9999;
+    will-change: transform;
+  }
+  @media (pointer: fine) {
+    * { cursor: none !important; }
+  }
+
   .ribbon {
-    background: var(--navy);
+    background: rgba(20, 15, 12, 0.45);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     color: #fff;
     text-align: center;
     font-size: 0.82rem;
     padding: 8px 16px;
+    border-top: 2px solid transparent;
+    border-image: linear-gradient(90deg, #f59e0b, #f43f5e, #f59e0b) 1;
   }
   .navbar {
-    background: var(--card);
+    background: rgba(25, 19, 16, 0.35);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--card-border);
     padding: 14px 32px;
     display: flex;
@@ -111,17 +130,52 @@ STYLE = """
     flex-wrap: wrap;
     gap: 12px;
   }
-  .navbar-left { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+  .navbar-left { display: flex; align-items: center; gap: 28px; flex-wrap: nowrap; min-width: 0; flex: 1 1 auto; }
   .navbar .logo {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
     font-weight: 800;
     font-size: 1.15rem;
     letter-spacing: -0.02em;
     color: var(--text);
     white-space: nowrap;
   }
-  .navbar .logo .mark { color: var(--accent); }
-  .navlinks { display: flex; gap: 18px; flex-wrap: wrap; }
-  .navlinks a { color: var(--muted); font-weight: 600; font-size: 0.86rem; }
+  .navbar .logo:hover { text-decoration: none; }
+  .navbar .logo.active { color: var(--accent); }
+  .navbar .logo .mark {
+    display: inline-block;
+    font-size: 1.3rem;
+    line-height: 1;
+    animation: bot-float 2.4s ease-in-out infinite;
+  }
+  @keyframes bot-float {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    25% { transform: translateY(-3px) rotate(-8deg); }
+    50% { transform: translateY(0) rotate(0deg); }
+    75% { transform: translateY(-2px) rotate(8deg); }
+  }
+  .navlinks {
+    display: flex;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-width: 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .navlinks::-webkit-scrollbar { display: none; }
+  .navlinks a {
+    display: inline-block;
+    flex-shrink: 0;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.86rem;
+  }
   .navlinks a:hover { color: var(--text); text-decoration: none; }
   .navlinks a.active { color: var(--accent); }
   .navbar .streak-badge {
@@ -133,23 +187,22 @@ STYLE = """
     font-size: 0.85rem;
     white-space: nowrap;
   }
-  .whoami-form { display: flex; align-items: center; gap: 6px; }
-  .whoami-form input {
-    width: 110px;
-    margin: 0;
-    padding: 6px 12px;
-    font-size: 0.82rem;
-    background: var(--bg-alt);
-    border: 1px solid var(--card-border);
-    border-radius: 999px;
-    color: var(--text);
+  .streak-badge .flame { display: inline-block; animation: flame-flicker 1.6s ease-in-out infinite; }
+  @keyframes flame-flicker {
+    0%, 100% { transform: scale(1) rotate(0deg); }
+    30% { transform: scale(1.08) rotate(-4deg); }
+    60% { transform: scale(0.96) rotate(3deg); }
   }
 
-  .container { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+  .container { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; animation: page-fade-in 0.35s ease; }
+  @keyframes page-fade-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
   .two-col { display: grid; grid-template-columns: 1.6fr 1fr; gap: 20px; align-items: start; }
   @media (max-width: 820px) { .two-col { grid-template-columns: 1fr; } }
 
-  h1 { font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
+  h1 { font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; text-shadow: 0 2px 16px rgba(0,0,0,0.35); }
   h2 { font-size: 1.05rem; font-weight: 700; margin: 0 0 14px; }
   h2.kicker {
     font-weight: 700;
@@ -159,13 +212,32 @@ STYLE = """
     font-size: 0.75rem;
   }
   .sub { color: var(--muted); font-size: 0.92rem; margin-bottom: 28px; }
+  .sub a { display: inline-block; transition: transform 0.15s ease; }
+  .sub a:hover { transform: translateX(-2px); }
 
   .card {
-    background: var(--card);
+    position: relative;
+    background: rgba(25, 19, 16, 0.55);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     border: 1px solid var(--card-border);
     border-radius: 18px;
     padding: 22px 24px;
-    box-shadow: 0 1px 2px rgba(32,19,71,0.03), 0 14px 28px -20px rgba(32,19,71,0.18);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15), 0 14px 28px -20px rgba(0,0,0,0.40);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+  .card:hover {
+    border-color: rgba(245, 158, 11, 0.35);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15), 0 20px 36px -18px rgba(0,0,0,0.45);
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 16px;
+    right: 16px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
   }
 
   .quickstart-grid {
@@ -175,40 +247,91 @@ STYLE = """
     margin-bottom: 24px;
   }
   .quickstart-card {
+    position: relative;
     display: block;
-    background: var(--card);
-    border: 1px solid var(--card-border);
+    overflow: hidden;
+    min-height: 108px;
     border-radius: 18px;
-    padding: 24px 16px;
-    text-align: center;
-    color: var(--text);
-    box-shadow: 0 1px 2px rgba(32,19,71,0.03);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
-  .quickstart-card:hover { transform: translateY(-2px); box-shadow: 0 14px 26px -16px rgba(32,19,71,0.28); text-decoration: none; }
-  .quickstart-icon { font-size: 1.9rem; margin-bottom: 10px; }
+  .quickstart-card:hover { transform: translateY(-2px); box-shadow: 0 14px 26px -16px rgba(0,0,0,0.45); text-decoration: none; }
+  .quickstart-card .blob {
+    position: absolute;
+    z-index: 1;
+    top: 50%;
+    left: 50%;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background-color: var(--accent);
+    opacity: 0.9;
+    filter: blur(14px);
+    animation: blob-bounce 5s infinite ease;
+  }
+  .quickstart-card .bg {
+    position: absolute;
+    inset: 3px;
+    z-index: 2;
+    background: rgba(25, 19, 16, 0.85);
+    backdrop-filter: blur(20px);
+    border-radius: 15px;
+    outline: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+    color: var(--text);
+  }
+  @keyframes blob-bounce {
+    0% { transform: translate(-100%, -100%) translate3d(0, 0, 0); }
+    25% { transform: translate(-100%, -100%) translate3d(100%, 0, 0); }
+    50% { transform: translate(-100%, -100%) translate3d(100%, 100%, 0); }
+    75% { transform: translate(-100%, -100%) translate3d(0, 100%, 0); }
+    100% { transform: translate(-100%, -100%) translate3d(0, 0, 0); }
+  }
+  .quickstart-icon {
+    font-size: 1.9rem;
+    margin-bottom: 10px;
+    filter: drop-shadow(0 6px 10px rgba(0,0,0,0.45));
+    transition: transform 0.2s ease;
+  }
+  .quickstart-card:hover .quickstart-icon { transform: translateY(-2px) scale(1.08); }
   .quickstart-label { font-weight: 700; font-size: 0.9rem; }
 
-  .stat-value { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; }
+  .stat-value { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .sub, .track-count, .leaderboard-count { font-variant-numeric: tabular-nums; }
   .stat-label { color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
   .bar-track { background: var(--bg-alt); border-radius: 999px; height: 8px; overflow: hidden; margin-top: 14px; }
   .bar-fill { background: var(--accent); height: 100%; border-radius: 999px; }
 
   .section { margin-top: 20px; }
-  .track-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--card-border); }
-  .track-row:last-child { border-bottom: none; padding-bottom: 0; }
-  .track-row:first-child { padding-top: 0; }
+  .track-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px;
+    margin: 0 -12px;
+    border-radius: 10px;
+    border-bottom: 1px solid var(--card-border);
+    transition: background-color 0.15s ease;
+  }
+  .track-row:last-child { border-bottom: none; }
   .track-row.link { cursor: pointer; }
-  .track-row.link:hover { text-decoration: none; }
+  .track-row.link:hover { text-decoration: none; background-color: rgba(245, 158, 11, 0.06); }
   .track-icon {
     width: 38px; height: 38px; border-radius: 11px;
     display: flex; align-items: center; justify-content: center;
     font-weight: 800; color: #fff; font-size: 0.85rem; flex-shrink: 0;
+    box-shadow: 0 4px 10px -4px rgba(0,0,0,0.5);
+    transition: transform 0.15s ease;
   }
+  .track-row.link:hover .track-icon { transform: scale(1.08); }
   .track-icon.easy { background: linear-gradient(135deg, #4ade80, #16a34a); }
   .track-icon.medium { background: linear-gradient(135deg, #fbbf24, #d97706); }
   .track-icon.hard { background: linear-gradient(135deg, #f87171, #dc2626); }
-  .track-icon.category { background: linear-gradient(135deg, #818cf8, #5848eb); }
+  .track-icon.category { background: linear-gradient(135deg, #868e96, #495057); }
   .track-info { flex: 1; min-width: 0; }
   .track-name { font-weight: 700; text-transform: capitalize; font-size: 0.9rem; margin-bottom: 6px; }
   .track-bar-track { background: var(--bg-alt); border-radius: 999px; height: 6px; overflow: hidden; }
@@ -216,17 +339,21 @@ STYLE = """
   .track-bar-fill.easy { background: #22c55e; }
   .track-bar-fill.medium { background: #f59e0b; }
   .track-bar-fill.hard { background: #ef4444; }
-  .track-bar-fill.category { background: #5848eb; }
+  .track-bar-fill.category { background: #868e96; }
   .track-count { color: var(--muted); font-size: 0.78rem; margin-top: 6px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
   th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--card-border); }
   th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
   tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background-color 0.15s ease; }
+  tbody tr:hover { background-color: rgba(245, 158, 11, 0.06); }
   .empty { color: var(--muted); font-size: 0.9rem; padding: 8px 0; }
 
   .btn {
+    position: relative;
     display: inline-block;
+    overflow: hidden;
     background: var(--accent);
     color: #fff;
     font-weight: 700;
@@ -236,11 +363,56 @@ STYLE = """
     border: none;
     cursor: pointer;
     font-size: 0.92rem;
-    transition: background 0.15s ease;
+    box-shadow: 0 8px 20px -8px rgba(245, 158, 11, 0.55);
+    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   }
+  .btn:active { transform: translateY(1px); }
   .btn:hover { background: var(--accent-dark); text-decoration: none; }
+  .btn::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -75%;
+    width: 50%;
+    height: 100%;
+    background: linear-gradient(115deg, transparent, rgba(255,255,255,0.35), transparent);
+    transform: skewX(-20deg);
+    transition: left 0.5s ease;
+  }
+  .btn:hover::before { left: 125%; }
   .btn.secondary { background: var(--card); color: var(--text); border: 1px solid var(--card-border); }
   .btn.secondary:hover { background: var(--bg-alt); }
+
+  /* From Uiverse.io by Spacious74 (recolored to match the ember accent) */
+  .glow-button-container {
+    position: relative;
+    z-index: 0;
+    display: inline-block;
+    padding: 3px;
+    background: linear-gradient(90deg, #f59e0b, #f43f5e);
+    border-radius: 13px;
+    transition: all 0.4s ease;
+  }
+  .glow-button-container::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    border-radius: 13px;
+    z-index: -10;
+    filter: blur(0);
+    transition: filter 0.4s ease;
+  }
+  .glow-button-container:hover::before {
+    background: linear-gradient(90deg, #f59e0b, #f43f5e);
+    filter: blur(1.2em);
+  }
+  .glow-button-container:active::before { filter: blur(0.2em); }
+  .glow-button-container .btn { display: block; }
+  .glow-button-container.pill,
+  .glow-button-container.pill::before { border-radius: 999px; }
+  .glow-button-container.pill a { display: block; border-radius: 999px; }
+  .glow-button-container.tight { padding: 2px; }
 
   .diff-choices { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
   .diff-choices label {
@@ -250,8 +422,14 @@ STYLE = """
     padding: 10px 18px;
     cursor: pointer;
     font-size: 0.9rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .diff-choices label:hover { background: var(--bg-alt); }
+  .diff-choices label:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px var(--accent) inset;
+  }
   .diff-choices input { margin-right: 6px; accent-color: var(--accent); }
 
   select {
@@ -263,20 +441,23 @@ STYLE = """
     padding: 12px 14px;
     font-size: 0.92rem;
     margin: 10px 0 16px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
+  select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
 
   textarea, input[type="text"] {
     width: 100%;
-    background: #0b0a12;
+    background: var(--ink);
     color: var(--text);
     border: 1px solid var(--card-border);
     border-radius: 12px;
     padding: 14px;
     font-size: 0.95rem;
     outline: none;
-    transition: border-color 0.15s ease;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.4);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  textarea:focus, input[type="text"]:focus { border-color: var(--accent); }
+  textarea:focus, input[type="text"]:focus { border-color: var(--accent); box-shadow: inset 0 2px 6px rgba(0,0,0,0.4), 0 0 0 3px var(--accent-soft); }
   textarea { min-height: 160px; font-family: "SF Mono", Consolas, monospace; resize: vertical; }
   .prompt { margin: 10px 0 18px; line-height: 1.6; color: var(--text); }
   .lesson {
@@ -295,10 +476,10 @@ STYLE = """
   .progress-dots .dot.done { background: var(--good); }
   .progress-dots .dot.current { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
-  .feedback { padding: 12px 16px; border-radius: 12px; margin-bottom: 18px; font-size: 0.9rem; border: 1px solid transparent; white-space: pre-line; line-height: 1.5; }
-  .feedback.ok { background: #12291f; color: #4ade80; border-color: #1f4a35; }
-  .feedback.bad { background: #2c1418; color: #f87171; border-color: #4a2028; }
-  .feedback.info { background: var(--accent-soft); color: #b7aaff; border-color: #3a3160; }
+  .feedback { padding: 12px 16px; border-radius: 10px; margin-bottom: 18px; font-size: 0.9rem; border: 1px solid transparent; border-left-width: 3px; white-space: pre-line; line-height: 1.5; }
+  .feedback.ok { background: #12291f; color: #4ade80; border-color: #1f4a35; border-left-color: #4ade80; }
+  .feedback.bad { background: #2c1418; color: #f87171; border-color: #4a2028; border-left-color: #f87171; }
+  .feedback.info { background: var(--accent-soft); color: #fcd34d; border-color: #6b4f12; border-left-color: #fcd34d; }
 
   .badge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .badge {
@@ -306,14 +487,30 @@ STYLE = """
     padding: 14px;
     text-align: center;
     border: 1px solid var(--card-border);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
   }
-  .badge.earned { background: linear-gradient(160deg, #2e2410, #201d2b); border-color: #6b5620; }
+  .badge.earned {
+    background: linear-gradient(160deg, #2e2410, #201d2b);
+    border-color: #6b5620;
+    box-shadow: 0 10px 24px -16px rgba(245, 158, 11, 0.5);
+  }
+  .badge.earned:hover { transform: translateY(-3px); box-shadow: 0 16px 32px -16px rgba(245, 158, 11, 0.65); }
   .badge.locked { background: var(--bg-alt); opacity: 0.55; filter: grayscale(0.4); }
-  .badge-emoji { font-size: 1.8rem; margin-bottom: 6px; }
+  .badge-emoji { font-size: 1.8rem; margin-bottom: 6px; filter: drop-shadow(0 6px 10px rgba(0,0,0,0.45)); }
   .badge-name { font-weight: 700; font-size: 0.82rem; }
   .badge-desc { color: var(--muted); font-size: 0.72rem; margin-top: 4px; line-height: 1.3; }
 
-  .leaderboard-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--card-border); }
+  .leaderboard-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    margin: 0 -12px;
+    border-radius: 10px;
+    border-bottom: 1px solid var(--card-border);
+    transition: background-color 0.15s ease;
+  }
+  .leaderboard-row:hover { background-color: rgba(245, 158, 11, 0.06); }
   .leaderboard-row:last-child { border-bottom: none; }
   .leaderboard-rank { width: 28px; font-weight: 800; text-align: center; }
   .leaderboard-name { flex: 1; font-weight: 600; }
@@ -321,9 +518,9 @@ STYLE = """
 
   .heatmap { display: flex; gap: 3px; flex-wrap: wrap; }
   .heatmap-cell { width: 11px; height: 11px; border-radius: 3px; background: var(--bg-alt); }
-  .heatmap-cell.l1 { background: #2f2a52; }
-  .heatmap-cell.l2 { background: #453d7a; }
-  .heatmap-cell.l3 { background: #5c4fa8; }
+  .heatmap-cell.l1 { background: #2e2410; }
+  .heatmap-cell.l2 { background: #6b4f12; }
+  .heatmap-cell.l3 { background: #b3760f; }
   .heatmap-cell.l4 { background: var(--accent); }
 
   .celebrate { animation: pop 0.4s ease; }
@@ -338,6 +535,7 @@ STYLE = """
     font-size: 1.05rem;
     margin-bottom: 18px;
     color: var(--text);
+    box-shadow: 0 12px 28px -16px rgba(245, 158, 11, 0.45);
   }
   .badge-unlock {
     background: linear-gradient(135deg, #2e2410, #201d2b);
@@ -347,6 +545,7 @@ STYLE = """
     margin-bottom: 10px;
     font-size: 0.9rem;
     color: var(--text);
+    box-shadow: 0 10px 24px -16px rgba(245, 158, 11, 0.4);
   }
 
   .filter-bar { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -354,7 +553,7 @@ STYLE = """
   .status-icon { font-size: 1rem; }
   .btn-sm { padding: 6px 14px; font-size: 0.8rem; border-radius: 8px; }
   .code-preview {
-    background: #0b0a12;
+    background: var(--ink);
     border: 1px solid var(--card-border);
     border-radius: 8px;
     padding: 10px 12px;
@@ -365,11 +564,13 @@ STYLE = """
     max-height: 100px;
     overflow-y: auto;
     margin-top: 6px;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.4);
   }
   .submission-row { padding: 12px 0; border-bottom: 1px solid var(--card-border); }
   .submission-row:last-child { border-bottom: none; }
   .submission-meta { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; }
-  .result-pill { padding: 3px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }
+  .result-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }
+  .result-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
   .result-pill.pass { background: #12291f; color: #4ade80; }
   .result-pill.fail { background: #2c1418; color: #f87171; }
 </style>
@@ -379,26 +580,136 @@ NAVBAR = """
 <div class="ribbon">Small daily reps beat cramming &mdash; keep your streak alive.</div>
 <div class="navbar">
   <div class="navbar-left">
-    <div class="logo"><span class="mark">&lt;/&gt;</span> Raybot</div>
+    <a class="logo {{ 'active' if nav_active == 'home' else '' }}" href="{{ url_for('dashboard') }}"><span class="mark">&#129302;</span> <span class="hyper-text">Raybot</span></a>
     <nav class="navlinks">
-      <a class="{{ 'active' if nav_active == 'home' else '' }}" href="{{ url_for('dashboard') }}">Home</a>
-      <a class="{{ 'active' if nav_active == 'progress' else '' }}" href="{{ url_for('progress_page') }}">Progress</a>
-      <a class="{{ 'active' if nav_active == 'problems' else '' }}" href="{{ url_for('problems_page') }}">Problems</a>
-      <a class="{{ 'active' if nav_active == 'categories' else '' }}" href="{{ url_for('categories_page') }}">Categories</a>
-      <a class="{{ 'active' if nav_active == 'history' else '' }}" href="{{ url_for('history_page') }}">History</a>
-      <a class="{{ 'active' if nav_active == 'badges' else '' }}" href="{{ url_for('badges_page') }}">Badges</a>
-      <a class="{{ 'active' if nav_active == 'leaderboard' else '' }}" href="{{ url_for('leaderboard_page') }}">Leaderboard</a>
+      <div class="glow-button-container pill tight"><a class="{{ 'active' if nav_active == 'progress' else '' }}" href="{{ url_for('progress_page') }}">Progress</a></div>
+      <div class="glow-button-container pill tight"><a class="{{ 'active' if nav_active == 'problems' else '' }}" href="{{ url_for('problems_page') }}">Problems</a></div>
+      <div class="glow-button-container pill tight"><a class="{{ 'active' if nav_active == 'categories' else '' }}" href="{{ url_for('categories_page') }}">Categories</a></div>
+      <div class="glow-button-container pill tight"><a class="{{ 'active' if nav_active == 'history' else '' }}" href="{{ url_for('history_page') }}">History</a></div>
+      <div class="glow-button-container pill tight"><a class="{{ 'active' if nav_active == 'badges' else '' }}" href="{{ url_for('badges_page') }}">Badges</a></div>
+      <div class="glow-button-container pill tight"><a class="{{ 'active' if nav_active == 'leaderboard' else '' }}" href="{{ url_for('leaderboard_page') }}">Leaderboard</a></div>
     </nav>
   </div>
-  <div style="display: flex; align-items: center; gap: 12px;">
-    <form method="post" action="{{ url_for('set_user') }}" class="whoami-form">
-      <input type="text" name="user_name" value="{{ user_name }}" maxlength="40" title="Your display name — everyone's progress here is separate">
-      <button class="btn secondary btn-sm" type="submit">Set</button>
-    </form>
-    {% if streak is defined %}<div class="streak-badge">&#128293; {{ streak }} day streak</div>{% endif %}
-  </div>
+  {% if streak is defined %}<div class="streak-badge"><span class="flame">&#128293;</span> {{ streak }} day streak</div>{% endif %}
 </div>
 <div class="container">
+"""
+
+SCRIPTS = """
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  // SmoothCursor (ported from magicui's SmoothCursor: a lerped, rotation-aware custom cursor)
+  if (window.matchMedia('(pointer: fine)').matches) {
+    var cursor = document.createElement('div');
+    cursor.id = 'smooth-cursor';
+    cursor.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+      '<path d="M4 2L20 12L12 13.5L9 21L4 2Z" fill="#f59e0b" stroke="#100C0A" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+    document.body.appendChild(cursor);
+
+    var mouseX = window.innerWidth / 2, mouseY = window.innerHeight / 2;
+    var curX = mouseX, curY = mouseY, curAngle = 0, lastX = mouseX, lastY = mouseY;
+
+    document.addEventListener('mousemove', function (e) {
+      mouseX = e.clientX;
+      mouseY = e.clientY;
+    });
+
+    (function animate() {
+      curX += (mouseX - curX) * 0.22;
+      curY += (mouseY - curY) * 0.22;
+      var dx = mouseX - lastX, dy = mouseY - lastY;
+      if (Math.hypot(dx, dy) > 1) {
+        var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI + 90;
+        curAngle += (targetAngle - curAngle) * 0.25;
+      }
+      lastX = mouseX;
+      lastY = mouseY;
+      cursor.style.transform = 'translate(' + curX + 'px,' + curY + 'px) rotate(' + curAngle + 'deg)';
+      requestAnimationFrame(animate);
+    })();
+  }
+
+  // HyperText (ported from magicui's HyperText: scramble-reveal on hover)
+  var HYPER_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  document.querySelectorAll('h1, .hyper-text').forEach(function (el) {
+    var original = el.textContent;
+    var animating = false;
+    el.addEventListener('mouseenter', function () {
+      if (animating) return;
+      animating = true;
+      var duration = 500;
+      var start = performance.now();
+      var len = original.length;
+      (function frame(now) {
+        var progress = Math.min((now - start) / duration, 1);
+        var revealCount = progress * len;
+        var out = '';
+        for (var i = 0; i < len; i++) {
+          var ch = original[i];
+          out += ch === ' ' ? ' ' : (i <= revealCount ? ch.toUpperCase() : HYPER_CHARS[Math.floor(Math.random() * HYPER_CHARS.length)]);
+        }
+        el.textContent = out;
+        if (progress < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          el.textContent = original.toUpperCase();
+          animating = false;
+        }
+      })(start);
+    });
+  });
+});
+</script>
+"""
+
+NAVBAR = NAVBAR + SCRIPTS
+
+LAUNCH_PAGE = STYLE + """
+<style>
+  .hero-video {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .hero-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: linear-gradient(180deg, rgba(16,12,10,0.45) 0%, rgba(16,12,10,0.75) 65%, rgba(16,12,10,0.95) 100%);
+  }
+  .launch-wrap {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+  }
+  .launch-mark { font-size: 4rem; line-height: 1; animation: bot-float 2.4s ease-in-out infinite; margin-bottom: 8px; }
+  .launch-title { font-size: 3rem; font-weight: 800; letter-spacing: -0.03em; margin: 0 0 12px; text-shadow: 0 4px 24px rgba(0,0,0,0.5); }
+  .launch-tagline { color: var(--muted); font-size: 1.05rem; max-width: 480px; margin: 0 0 32px; line-height: 1.6; }
+</style>
+""" + SCRIPTS + """
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Raybot</title></head>
+<body>
+  <video class="hero-video" autoplay muted loop playsinline>
+    <source src="https://videos.pexels.com/video-files/12257306/12257306-uhd_2560_1440_60fps.mp4" type="video/mp4">
+  </video>
+  <div class="hero-overlay"></div>
+  <div class="launch-wrap">
+    <div class="launch-mark">&#129302;</div>
+    <h1 class="launch-title">Raybot</h1>
+    <p class="launch-tagline">Small daily reps beat cramming &mdash; practice Python, take quizzes, and build your streak.</p>
+    <div class="glow-button-container"><a class="btn" href="{{ url_for('dashboard') }}">Enter dashboard</a></div>
+  </div>
+</body>
+</html>
 """
 
 HOME_PAGE = STYLE + NAVBAR + """
@@ -411,32 +722,53 @@ HOME_PAGE = STYLE + NAVBAR + """
 
   <div class="quickstart-grid">
     <a class="quickstart-card" href="{{ url_for('quiz_start_page') }}">
-      <div class="quickstart-icon">&#128221;</div>
-      <div class="quickstart-label">Take a quiz</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#128221;</div>
+        <div class="quickstart-label">Take a quiz</div>
+      </div>
     </a>
     <a class="quickstart-card" href="{{ url_for('problems_page') }}">
-      <div class="quickstart-icon">&#128269;</div>
-      <div class="quickstart-label">Browse problems</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#128269;</div>
+        <div class="quickstart-label">Browse problems</div>
+      </div>
     </a>
     <a class="quickstart-card" href="{{ url_for('progress_page') }}">
-      <div class="quickstart-icon">&#127919;</div>
-      <div class="quickstart-label">Your progress</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#127919;</div>
+        <div class="quickstart-label">Your progress</div>
+      </div>
     </a>
     <a class="quickstart-card" href="{{ url_for('categories_page') }}">
-      <div class="quickstart-icon">&#128218;</div>
-      <div class="quickstart-label">Categories</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#128218;</div>
+        <div class="quickstart-label">Categories</div>
+      </div>
     </a>
     <a class="quickstart-card" href="{{ url_for('history_page') }}">
-      <div class="quickstart-icon">&#128202;</div>
-      <div class="quickstart-label">Quiz history</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#128202;</div>
+        <div class="quickstart-label">Quiz history</div>
+      </div>
     </a>
     <a class="quickstart-card" href="{{ url_for('badges_page') }}">
-      <div class="quickstart-icon">&#127942;</div>
-      <div class="quickstart-label">Badges</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#127942;</div>
+        <div class="quickstart-label">Badges</div>
+      </div>
     </a>
     <a class="quickstart-card" href="{{ url_for('leaderboard_page') }}">
-      <div class="quickstart-icon">&#129351;</div>
-      <div class="quickstart-label">Leaderboard</div>
+      <div class="blob"></div>
+      <div class="bg">
+        <div class="quickstart-icon">&#129351;</div>
+        <div class="quickstart-label">Leaderboard</div>
+      </div>
     </a>
   </div>
 
@@ -511,9 +843,9 @@ HISTORY_PAGE = STYLE + NAVBAR + """
     <h2 class="kicker">Quiz score history</h2>
     {% if chart_points %}
     <svg viewBox="0 0 {{ chart_width }} 140" width="100%" height="140" preserveAspectRatio="none">
-      <polyline points="{{ chart_points }}" fill="none" stroke="#7c6cf5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+      <polyline points="{{ chart_points }}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
       {% for x, y, label in chart_dots %}
-      <circle cx="{{ x }}" cy="{{ y }}" r="4" fill="#7c6cf5"><title>{{ label }}</title></circle>
+      <circle cx="{{ x }}" cy="{{ y }}" r="4" fill="#f59e0b"><title>{{ label }}</title></circle>
       {% endfor %}
     </svg>
     {% else %}
@@ -651,7 +983,7 @@ PROBLEMS_PAGE = STYLE + NAVBAR + """
         <td><a href="{{ url_for('problem_page', problem_id=p.id) }}">{{ p.title }}</a></td>
         <td>{{ p.bucket }}</td>
         <td>{{ p.category }}</td>
-        <td><a class="btn secondary btn-sm" href="{{ url_for('problem_page', problem_id=p.id) }}">Solve</a></td>
+        <td><div class="glow-button-container tight"><a class="btn secondary btn-sm" href="{{ url_for('problem_page', problem_id=p.id) }}">Solve</a></div></td>
       </tr>
       {% endfor %}
     </table>
@@ -692,8 +1024,8 @@ PROBLEM_PAGE = STYLE + NAVBAR + """
     <form method="post" action="{{ url_for('problem_submit', problem_id=problem.id) }}">
       <textarea name="code" spellcheck="false">{{ code }}</textarea>
       <div style="margin-top: 12px; display: flex; gap: 10px;">
-        <button class="btn" type="submit">Submit</button>
-        <button class="btn secondary" type="button" onclick="getHint()">Get a hint</button>
+        <div class="glow-button-container"><button class="btn" type="submit">Submit</button></div>
+        <div class="glow-button-container"><button class="btn secondary" type="button" onclick="getHint()">Get a hint</button></div>
       </div>
     </form>
     <div id="hint-answer" style="margin-top: 12px; white-space: pre-wrap; line-height: 1.5; color: var(--muted);"></div>
@@ -704,7 +1036,7 @@ PROBLEM_PAGE = STYLE + NAVBAR + """
     <div style="display: flex; gap: 8px;">
       <input id="ask-input" type="text" placeholder="What's a loop? Why isn't my code working?"
              onkeydown="if (event.key === 'Enter') askRaybot();">
-      <button class="btn secondary" type="button" onclick="askRaybot()">Ask</button>
+      <div class="glow-button-container"><button class="btn secondary" type="button" onclick="askRaybot()">Ask</button></div>
     </div>
     <div id="ask-answer" style="margin-top: 12px; white-space: pre-wrap; line-height: 1.5; color: var(--muted);"></div>
   </div>
@@ -793,7 +1125,7 @@ QUIZ_START_PAGE = STYLE + NAVBAR + """
         <option value="{{ c }}" {{ 'selected' if c == selected_category else '' }}>{{ c }}</option>
         {% endfor %}
       </select>
-      <button class="btn" type="submit">Start</button>
+      <div class="glow-button-container"><button class="btn" type="submit">Start</button></div>
     </form>
   </div>
   {% if empty_difficulty %}
@@ -838,7 +1170,7 @@ QUIZ_QUESTION_PAGE = STYLE + NAVBAR + """
     <form method="post" action="{{ url_for('quiz_submit') }}">
       <textarea name="code" spellcheck="false">{{ starter }}</textarea>
       <div style="margin-top: 12px;">
-        <button class="btn" type="submit">Submit</button>
+        <div class="glow-button-container"><button class="btn" type="submit">Submit</button></div>
       </div>
     </form>
   </div>
@@ -848,7 +1180,7 @@ QUIZ_QUESTION_PAGE = STYLE + NAVBAR + """
     <div style="display: flex; gap: 8px;">
       <input id="ask-input" type="text" placeholder="What's a loop? Why isn't my code working?"
              onkeydown="if (event.key === 'Enter') askRaybot();">
-      <button class="btn secondary" type="button" onclick="askRaybot()">Ask</button>
+      <div class="glow-button-container"><button class="btn secondary" type="button" onclick="askRaybot()">Ask</button></div>
     </div>
     <div id="ask-answer" style="margin-top: 12px; white-space: pre-wrap; line-height: 1.5; color: var(--muted);"></div>
   </div>
@@ -904,8 +1236,8 @@ QUIZ_RESULT_PAGE = STYLE + NAVBAR + """
   <div class="card" style="max-width: 500px;">
     <div>{{ comparison }}</div>
     <div style="margin-top: 16px; display: flex; gap: 10px;">
-      <a class="btn" href="{{ url_for('quiz_start_page') }}">Take another</a>
-      <a class="btn secondary" href="{{ url_for('dashboard') }}">Back to dashboard</a>
+      <div class="glow-button-container"><a class="btn" href="{{ url_for('quiz_start_page') }}">Take another</a></div>
+      <div class="glow-button-container"><a class="btn secondary" href="{{ url_for('dashboard') }}">Back to dashboard</a></div>
     </div>
   </div>
 </div>
@@ -944,27 +1276,25 @@ def generate_with_timeout(category, bucket, timeout=110):
     return result_holder.get("result")
 
 
-@app.route("/set_user", methods=["POST"])
-def set_user():
-    name = (request.form.get("user_name") or "").strip()[:40]
-    session.permanent = True
-    session["user_name"] = name or DEFAULT_USER_NAME
-    return redirect(request.referrer or url_for("dashboard"))
+@app.route("/launch")
+def launch_page():
+    return render_template_string(LAUNCH_PAGE)
 
 
 @app.route("/")
 def dashboard():
-    user_name = get_user_name()
     total = len(db.all_problems())
-    solved = len(db.get_solved_ids(user_name))
+    solved = len(db.get_solved_ids())
     pct = round((solved / total) * 100, 1) if total else 0
-    quiz_count = len(db.get_quiz_history(user_name=user_name))
+    streak = db.get_streak()
+    quiz_count = len(db.get_quiz_history())
 
-    return render_page(
+    return render_template_string(
         HOME_PAGE,
         solved=solved,
         total=total,
         pct=pct,
+        streak=streak,
         quiz_count=quiz_count,
         nav_active="home",
     )
@@ -972,26 +1302,27 @@ def dashboard():
 
 @app.route("/progress")
 def progress_page():
-    return render_page(
+    return render_template_string(
         PROGRESS_PAGE,
-        buckets=db.difficulty_bucket_stats(get_user_name()),
+        buckets=db.difficulty_bucket_stats(),
+        streak=db.get_streak(),
         nav_active="progress",
     )
 
 
 @app.route("/categories")
 def categories_page():
-    return render_page(
+    return render_template_string(
         CATEGORIES_PAGE,
-        categories=db.category_stats(get_user_name()),
+        categories=db.category_stats(),
+        streak=db.get_streak(),
         nav_active="categories",
     )
 
 
 @app.route("/history")
 def history_page():
-    user_name = get_user_name()
-    history = db.get_quiz_history(user_name=user_name)
+    history = db.get_quiz_history()
 
     recent = history[-15:][::-1]
     recent_quizzes = [
@@ -1020,46 +1351,47 @@ def history_page():
             chart_dots.append((x, y, f"{h.get('date', '?')}: {h.get('score', 0)}/{h.get('total', 5)}"))
         chart_points = " ".join(pts)
 
-    activity = db.activity_by_day(user_name, days=84)
+    activity = db.activity_by_day(84)
     for day in activity:
         c = day["count"]
         day["level"] = "" if c <= 0 else "l1" if c == 1 else "l2" if c == 2 else "l3" if c == 3 else "l4"
     activity_weeks = [activity[i:i + 7] for i in range(0, len(activity), 7)]
 
-    return render_page(
+    return render_template_string(
         HISTORY_PAGE,
         recent_quizzes=recent_quizzes,
         chart_points=chart_points,
         chart_dots=chart_dots,
         chart_width=chart_width,
         activity_weeks=activity_weeks,
+        streak=db.get_streak(),
         nav_active="history",
     )
 
 
 @app.route("/badges")
 def badges_page():
-    user_name = get_user_name()
-    return render_page(
+    return render_template_string(
         BADGES_PAGE,
-        earned_badges=badges.earned_badges(user_name),
-        locked_badges=badges.locked_badges(user_name),
+        earned_badges=badges.earned_badges(),
+        locked_badges=badges.locked_badges(),
+        streak=db.get_streak(),
         nav_active="badges",
     )
 
 
 @app.route("/leaderboard")
 def leaderboard_page():
-    return render_page(
+    return render_template_string(
         LEADERBOARD_PAGE,
         leaderboard_rows=db.leaderboard(limit=10),
+        streak=db.get_streak(),
         nav_active="leaderboard",
     )
 
 
 @app.route("/problems")
 def problems_page():
-    user_name = get_user_name()
     category = request.args.get("category") or None
     difficulty = request.args.get("difficulty") or None
     status = request.args.get("status") or None
@@ -1068,8 +1400,8 @@ def problems_page():
     if difficulty:
         pool = [p for p in pool if db.difficulty_bucket(p["difficulty"]) == difficulty]
 
-    solved_ids = db.get_solved_ids(user_name)
-    skipped_ids = db.get_skipped_ids(user_name)
+    solved_ids = db.get_solved_ids()
+    skipped_ids = db.get_skipped_ids()
     rows = []
     for p in pool:
         is_solved = p["id"] in solved_ids
@@ -1087,52 +1419,52 @@ def problems_page():
             "skipped": is_skipped,
         })
 
-    return render_page(
+    return render_template_string(
         PROBLEMS_PAGE,
         problems=rows,
         categories=[c["name"] for c in db.get_categories()],
         selected_category=category or "",
         selected_difficulty=difficulty or "",
         selected_status=status or "",
+        streak=db.get_streak(),
         nav_active="problems",
     )
 
 
 @app.route("/problem/<problem_id>")
 def problem_page(problem_id):
-    user_name = get_user_name()
     problem = db.problem_by_id(problem_id)
     if problem is None:
         return redirect(url_for("problems_page"))
-    code = db.last_submission_code(problem_id, user_name=user_name) or problem["starter"]
-    return render_page(
+    code = db.last_submission_code(problem_id, user_name="dashboard") or problem["starter"]
+    return render_template_string(
         PROBLEM_PAGE,
         problem=problem,
         code=code,
-        solved=problem_id in db.get_solved_ids(user_name),
-        submissions=db.get_submissions(problem_id, user_name=user_name, limit=10),
+        solved=problem_id in db.get_solved_ids(),
+        submissions=db.get_submissions(problem_id, limit=10),
+        streak=db.get_streak(),
         nav_active="problems",
     )
 
 
 @app.route("/problem/<problem_id>/submit", methods=["POST"])
 def problem_submit(problem_id):
-    user_name = get_user_name()
     problem = db.problem_by_id(problem_id)
     if problem is None:
         return redirect(url_for("problems_page"))
     code = request.form.get("code", "")
 
     passed, total, error = grade_with_timeout(problem, code)
-    db.record_submission(problem_id, code, passed, total, error=error, user_name=user_name)
+    db.record_submission(problem_id, code, passed, total, error=error, user_name="dashboard")
 
     if error:
         flash(error, "bad")
     elif passed == total:
-        before_badges = badges.earned_ids(user_name)
-        db.mark_solved(problem_id, user_name=user_name, mode="dashboard_direct")
+        before_badges = badges.earned_ids()
+        db.mark_solved(problem_id, user_name="dashboard", mode="dashboard_direct")
         flash(f"{tutor.praise()} ({passed}/{total} tests passed)", "ok")
-        for badge in badges.newly_earned(before_badges, user_name):
+        for badge in badges.newly_earned(before_badges):
             flash(f"{badge['emoji']} New badge unlocked: {badge['name']} — {badge['desc']}", "info")
     else:
         explanation = tutor.explain_failure(problem, code, passed, total)
@@ -1169,19 +1501,21 @@ def problem_hint(problem_id):
 
 @app.route("/quiz")
 def quiz_start_page():
+    streak = db.get_streak()
     categories = [c["name"] for c in db.get_categories()]
-    return render_page(
+    return render_template_string(
         QUIZ_START_PAGE,
         quiz_length=QUIZ_LENGTH,
         empty_difficulty=request.args.get("empty"),
         categories=categories,
         selected_category=request.args.get("category", ""),
+        streak=streak,
+        nav_active=None,
     )
 
 
 @app.route("/quiz/start", methods=["POST"])
 def quiz_start():
-    user_name = get_user_name()
     difficulty = request.form.get("difficulty") or None
     category = request.form.get("category") or None
     adaptive = difficulty == "adaptive"
@@ -1197,9 +1531,9 @@ def quiz_start():
         pool = db.all_problems()
 
     if adaptive:
-        pool = db.adaptive_problem_order(user_name, pool)
+        pool = db.adaptive_problem_order(pool)
 
-    solved_ids = db.get_solved_ids(user_name)
+    solved_ids = db.get_solved_ids()
     unsolved_ids = [p["id"] for p in pool if p["id"] not in solved_ids]
     quiz_ids = unsolved_ids[:QUIZ_LENGTH]
     generated_notice = None
@@ -1210,7 +1544,7 @@ def quiz_start():
         quiz_ids += solved_pool_ids[: QUIZ_LENGTH - len(quiz_ids)]
 
     if not quiz_ids:
-        fallback_bucket = db.adaptive_bucket_order(user_name)[0] if adaptive else (difficulty or "medium")
+        fallback_bucket = db.adaptive_bucket_order()[0] if adaptive else (difficulty or "medium")
         new_id = generate_with_timeout(category or generator.pick_category(), fallback_bucket)
         if new_id:
             quiz_ids = [new_id]
@@ -1225,7 +1559,7 @@ def quiz_start():
     session["quiz_category"] = category or ""
     session["quiz_feedback"] = None
     session["quiz_generated_notice"] = generated_notice
-    session["quiz_badges_before"] = list(badges.earned_ids(user_name))
+    session["quiz_badges_before"] = list(badges.earned_ids())
     return redirect(url_for("quiz_question"), code=303)
 
 
@@ -1240,7 +1574,8 @@ def quiz_question():
     problem = db.problem_by_id(quiz_ids[index])
     feedback = session.pop("quiz_feedback", None)
     notice = session.pop("quiz_generated_notice", None)
-    return render_page(
+    streak = db.get_streak()
+    return render_template_string(
         QUIZ_QUESTION_PAGE,
         problem=problem,
         index=index + 1,
@@ -1249,6 +1584,8 @@ def quiz_question():
         starter=problem["starter"],
         feedback=feedback,
         generated_notice=notice,
+        streak=streak,
+        nav_active=None,
     )
 
 
@@ -1272,7 +1609,6 @@ def quiz_ask():
 
 @app.route("/quiz/submit", methods=["POST"])
 def quiz_submit():
-    user_name = get_user_name()
     quiz_ids = session.get("quiz_ids")
     if not quiz_ids:
         return redirect(url_for("quiz_start_page"))
@@ -1281,13 +1617,12 @@ def quiz_submit():
     code = request.form.get("code", "")
 
     passed, total, error = grade_with_timeout(problem, code)
-    db.record_submission(problem["id"], code, passed, total, error=error, user_name=user_name)
 
     if error:
         session["quiz_feedback"] = {"ok": False, "message": error}
     elif passed == total:
         session["quiz_score"] = session.get("quiz_score", 0) + 1
-        db.mark_solved(problem["id"], user_name=user_name, mode="dashboard_quiz")
+        db.mark_solved(problem["id"], user_name="dashboard", mode="dashboard_quiz")
         session["quiz_feedback"] = {"ok": True, "message": f"{tutor.praise()} ({passed}/{total} tests passed)"}
     else:
         explanation = tutor.explain_failure(problem, code, passed, total)
@@ -1304,7 +1639,6 @@ def quiz_submit():
 
 @app.route("/quiz/result")
 def quiz_result():
-    user_name = get_user_name()
     quiz_ids = session.get("quiz_ids")
     if not quiz_ids:
         return redirect(url_for("quiz_start_page"))
@@ -1315,10 +1649,10 @@ def quiz_result():
     category = session.get("quiz_category") or None
     feedback = session.get("quiz_feedback")
 
-    same_bucket_past = db.quiz_history_by_bucket(difficulty, key="difficulty", user_name=user_name)
+    same_bucket_past = db.quiz_history_by_bucket(difficulty, key="difficulty")
     past_scores = [h["score"] / h["total"] for h in same_bucket_past if h.get("total")]
 
-    db.record_quiz_attempt(score, total, difficulty=difficulty, category=category, user_name=user_name)
+    db.record_quiz_attempt(score, total, difficulty=difficulty, category=category, user_name="dashboard")
 
     comparison = ""
     if past_scores:
@@ -1332,14 +1666,14 @@ def quiz_result():
             comparison = f"Right on your {difficulty} average."
 
     badges_before = set(session.get("quiz_badges_before", []))
-    new_badges = badges.newly_earned(badges_before, user_name)
+    new_badges = badges.newly_earned(badges_before)
     is_perfect = total > 0 and score == total
 
     for key in ("quiz_ids", "quiz_index", "quiz_score", "quiz_difficulty", "quiz_category",
                 "quiz_feedback", "quiz_generated_notice", "quiz_badges_before"):
         session.pop(key, None)
 
-    return render_page(
+    return render_template_string(
         QUIZ_RESULT_PAGE,
         score=score,
         total=total,
@@ -1347,8 +1681,10 @@ def quiz_result():
         category=category,
         feedback=feedback,
         comparison=comparison,
+        streak=db.get_streak(),
         new_badges=new_badges,
         is_perfect=is_perfect,
+        nav_active=None,
     )
 
 
