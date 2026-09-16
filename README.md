@@ -123,18 +123,28 @@ flowchart TB
 - Adaptive quiz mode that weights questions toward whichever difficulty
   you've been scoring lowest on recently
 
-**Multi-user by design**
-- CLI: identity is your Windows/OS login — zero setup, and it doubles as the
-  dashboard's default identity too, so the two stay in sync for you on your
-  own machine
-- Discord: identity is your real Discord username — already how mentions and
-  DMs work, nothing extra needed
-- Dashboard: a small "who are you" box in the nav bar sets a display name in
-  a long-lived cookie — no password, just enough to keep a shared browser's
-  users from overwriting each other's progress
-- Race mode (`!quiz`) is the one deliberately *shared* mechanic: once anyone
-  wins a race with a problem, it won't be offered again — but the winner
-  still only gets credit in their own personal progress
+**Multi-user in Discord; single-identity everywhere else (corrected after review)**
+- Discord: identity is your real Discord username (`str(author)`, recorded on
+  every solve/quiz attempt) — already how mentions and DMs work, nothing
+  extra needed. This one is genuinely multi-user: each Discord account's
+  progress, streak, and quiz history stay separate.
+- CLI (`practice.py`): no per-user identity check found — it reads/writes
+  the shared curriculum state directly, so whoever runs it on this machine
+  shares one progress record with everyone else who also runs it here.
+- Dashboard (`dashboard.py`) and the combined agent app (`ray.py`): despite
+  earlier docs here claiming a "who are you" cookie-based display name,
+  no such mechanism exists in the code — every dashboard submission is
+  hardcoded to `user_name="dashboard"` (or `"you"` in `ray.py`). Every
+  device that opens the dashboard shares that one identity's solved count,
+  streak, and quiz history; on a LAN-shared install (see Security notes)
+  that means everyone using it merges into a single progress record, and
+  the leaderboard/personal-average features are not meaningful across
+  more than one person. If you want real per-browser identity here, that
+  cookie-based system would need to actually be built — it currently isn't.
+- Race mode (`!quiz`, Discord only) is the one deliberately *shared*
+  mechanic: once anyone wins a race with a problem, it won't be offered
+  again — but the winner still only gets credit in their own personal
+  Discord-identity progress.
 
 ## The agent (`raybot_agent`)
 

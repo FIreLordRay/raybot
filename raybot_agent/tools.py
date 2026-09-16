@@ -31,17 +31,41 @@ except Exception:  # pragma: no cover - environment dependent
 # --- run_python ------------------------------------------------------------------
 # Mirrors the denylist in python-practice/grading.py on purpose: there should be
 # one shared idea of "obviously dangerous", and this project is standalone so it
-# carries its own copy rather than importing it.
+# carries its own copy rather than importing it. (Both copies were hardened
+# together after a review found the plain-substring version below could be
+# bypassed by anyone who tried, not just a hostile expert -- see the three
+# comments inline.)
 #
 # This is NOT a sandbox. It is a best-effort screen plus a timeout, and here the
 # *model* chooses what to run, so treat it accordingly: localhost only, and only
 # with a model you're willing to let execute code on your machine.
-DENYLIST = [
-    "import os", "import sys", "import subprocess", "import socket", "import shutil",
-    "import requests", "import urllib", "import ctypes", "import pathlib",
-    "__import__", "open(", "eval(", "exec(", "globals(", "locals(",
-    "input(", "compile(", "breakpoint(",
-]
+_DENIED_MODULES = (
+    "os", "sys", "subprocess", "socket", "shutil", "requests", "urllib",
+    "ctypes", "pathlib", "importlib", "code", "pty", "signal", "multiprocessing",
+)
+_MODULE_ALTERNATION = "|".join(_DENIED_MODULES)
+# A plain substring check for "import os" never matches `from os import
+# system` (reversed word order) or `importlib.import_module('os')` (no
+# literal "import os" substring at all) -- both reach the same module with
+# zero blocked text present. Matching `import\s+<module>\b` and
+# `from\s+<module>\b\s+import\b` separately closes both, and `\s+` (not a
+# literal single space) means "import  os" or a tab can't slip through
+# either, the way the old literal-string list allowed.
+_IMPORT_RE = re.compile(
+    rf"\bimport\s+(?:{_MODULE_ALTERNATION})\b|\bfrom\s+(?:{_MODULE_ALTERNATION})\b\s+import\b"
+)
+
+# Dunder attributes with no legitimate use in a curriculum snippet, each a
+# building block of the classic no-import sandbox escape --
+# `().__class__.__bases__[0].__subclasses__()` walks the live class graph to
+# reach subprocess/file-opening classes without ever writing an import
+# statement, so the module-name check above cannot see it at all.
+_DENIED_DUNDERS = (
+    "__subclasses__", "__bases__", "__globals__", "__builtins__", "__mro__",
+    "__import__", "__loader__", "__base__",
+)
+
+_DENIED_CALLS = ("open(", "eval(", "exec(", "globals(", "locals(", "input(", "compile(", "breakpoint(")
 
 RUN_TIMEOUT_SECONDS = 5
 MAX_OUTPUT_CHARS = 2000
@@ -54,7 +78,13 @@ MAX_OUTPUT_CHARS = 2000
 
 def _denied(code):
     lowered = code.lower()
-    for token in DENYLIST:
+    match = _IMPORT_RE.search(lowered)
+    if match:
+        return match.group(0).strip()
+    for token in _DENIED_DUNDERS:
+        if token in lowered:
+            return token
+    for token in _DENIED_CALLS:
         if token in lowered:
             return token
     return None

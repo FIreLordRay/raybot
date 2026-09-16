@@ -319,7 +319,14 @@ def index():
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json(silent=True) or {}
-    message = (data.get("message") or "").strip()
+    # `(data.get("message") or "").strip()` looked like it handled a missing
+    # message, but only guards *falsy* values -- a body like
+    # {"message": 123} is truthy, skips the "" fallback, and .strip() on an
+    # int raised AttributeError outside this route's own try/except (which
+    # only wraps agent.run_turn), producing a raw unhandled 500 instead of
+    # the clean JSON error every other bad-input path here returns.
+    raw_message = data.get("message")
+    message = raw_message.strip() if isinstance(raw_message, str) else ""
     history = data.get("history") or []
 
     if not message:

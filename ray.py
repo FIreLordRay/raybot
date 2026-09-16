@@ -18,6 +18,7 @@ Missing either degrades rather than crashes: without Ollama the chat reports it
 and the curriculum still works; without the database the agent still runs code.
 """
 
+import multiprocessing
 import sys
 import threading
 from pathlib import Path
@@ -69,19 +70,40 @@ def stats():
     }
 
 
+def _run_grading_in_subprocess(problem, code, result_queue):
+    """Top-level (picklable) subprocess entry point -- see grade()."""
+    try:
+        result_queue.put(grading.exec_and_test(problem, code))
+    except Exception as exc:  # noqa: BLE001 - must always put *something*, or the parent hangs
+        result_queue.put((0, len(problem.get("tests") or []), f"{type(exc).__name__}: {exc}"))
+
+
 def grade(problem, code):
-    """Run the shared grader with a wall-clock bound (it is synchronous/un-timed)."""
-    box = {}
+    """Run the shared grader in its own OS process, killed on timeout.
 
-    def target():
-        box["result"] = grading.exec_and_test(problem, code)
-
-    thread = threading.Thread(target=target, daemon=True)
-    thread.start()
-    thread.join(GRADE_TIMEOUT_SECONDS)
-    if thread.is_alive():
+    Was previously a daemon thread joined with a timeout and abandoned if
+    still running -- Python cannot forcibly stop a thread, so an
+    infinite-loop submission left that thread permanently burning a CPU
+    core in the background forever. An OS process, unlike a thread, can
+    actually be killed: this always returns within GRADE_TIMEOUT_SECONDS
+    (plus a small terminate/join overhead) regardless of what the code does.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(target=_run_grading_in_subprocess, args=(problem, code, result_queue), daemon=True)
+    process.start()
+    process.join(GRADE_TIMEOUT_SECONDS)
+    if process.is_alive():
+        process.terminate()
+        process.join(2)
+        if process.is_alive():  # pragma: no cover - terminate() not honoured in time, rare
+            process.kill()
+            process.join(1)
         return 0, len(problem["tests"]), f"Timed out after {GRADE_TIMEOUT_SECONDS}s."
-    return box.get("result", (0, len(problem["tests"]), "Grader did not return."))
+    try:
+        return result_queue.get_nowait()
+    except Exception:
+        return 0, len(problem["tests"]), "Grader did not return."
 
 
 # ---------------------------------------------------------------------------------
@@ -577,4 +599,9 @@ def api_stats():
 
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=False)
+    # threaded=True: safe now that grade() runs in a genuinely killable
+    # subprocess rather than a thread that could pile up unbounded under
+    # concurrent requests; without it Flask's dev server handles one
+    # request at a time, so a single grading/agent call would block every
+    # other request for its whole duration.
+    app.run(port=5000, debug=False, threaded=True)

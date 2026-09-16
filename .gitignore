@@ -1,5 +1,6 @@
 # Secrets — never commit
 .env
+.dashboard_secret_key
 
 # Local runtime state — machine-specific, not source
 raybot_config.json

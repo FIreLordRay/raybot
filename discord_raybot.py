@@ -12,6 +12,11 @@ Commands:
     !firelordray [easy|medium|hard] [category]
                       DMs you a personal 5-question quiz (optionally filtered
                       by difficulty and/or category) and tracks your score over time.
+                      Both are positional, in that order -- there's no way to give
+                      only a category: `!firelordray strings` binds "strings" to
+                      the difficulty slot and errors ("Difficulty must be easy,
+                      medium, or hard"). To filter by category, give a difficulty
+                      too, e.g. `!firelordray easy strings`, or leave both off.
     !setquizchannel   (Manage Server permission) Makes this channel the one
                       that gets a daily auto-posted race question.
     !progress         Shows shared curriculum progress/streak.
@@ -40,6 +45,7 @@ import asyncio
 import concurrent.futures
 import datetime
 import json
+import multiprocessing
 import os
 import random
 import sys
@@ -92,14 +98,57 @@ def save_config(config):
 extract_code = grading.extract_code
 
 
+def _run_grading_in_subprocess(problem, code, result_queue):
+    """Top-level (picklable) subprocess entry point -- see grade_submission."""
+    try:
+        result_queue.put(grading.exec_and_test(problem, code))
+    except Exception as exc:  # noqa: BLE001 - must always put *something*, or the parent hangs
+        result_queue.put((0, len(problem.get("tests") or []), f"{type(exc).__name__}: {exc}"))
+
+
+def _grade_blocking(problem, code, timeout_seconds):
+    """Runs grading.exec_and_test in its own OS process, killed on timeout.
+
+    Was previously `loop.run_in_executor(EXECUTOR, grading.exec_and_test, ...)`
+    with `asyncio.wait_for` around it -- that only stops *awaiting* the
+    future; the ThreadPoolExecutor worker actually running an infinite-loop
+    submission keeps burning that thread forever (Python cannot forcibly
+    stop a thread). EXECUTOR has 4 workers total, shared with tutor
+    explanations and problem generation, so 4 concurrent hung submissions
+    (four different users, or one user four times) permanently wedge ALL of
+    it -- every subsequent submission times out regardless of what it does,
+    and Ollama-backed features stop responding too, forever, until the bot
+    process is restarted. An OS process, unlike a thread, can actually be
+    killed: this function always returns within timeout_seconds (plus a
+    small terminate/join overhead) no matter what the submitted code does,
+    which is what makes it safe to call from a normal thread pool without
+    that pool ever wedging the way EXECUTOR could.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(target=_run_grading_in_subprocess, args=(problem, code, result_queue), daemon=True)
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(2)
+        if process.is_alive():  # pragma: no cover - terminate() not honoured in time, rare
+            process.kill()
+            process.join(1)
+        return 0, len(problem.get("tests") or []), f"Timed out after {timeout_seconds}s (infinite loop?)."
+    try:
+        return result_queue.get_nowait()
+    except Exception:
+        return 0, len(problem.get("tests") or []), "The submission process exited without reporting a result."
+
+
 async def grade_submission(problem, code):
     loop = asyncio.get_running_loop()
-    try:
-        future = loop.run_in_executor(EXECUTOR, grading.exec_and_test, problem, code)
-        passed, total, error = await asyncio.wait_for(future, timeout=EXEC_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        return 0, len(problem["tests"]), f"Timed out after {EXEC_TIMEOUT_SECONDS}s (infinite loop?)."
-    return passed, total, error
+    # Deliberately NOT run on EXECUTOR: this uses the loop's default executor,
+    # whose threads always return promptly (see _grade_blocking's docstring)
+    # regardless of what the submitted code does, so grading can never wedge
+    # the pool tutor/generator calls also depend on.
+    return await loop.run_in_executor(None, _grade_blocking, problem, code, EXEC_TIMEOUT_SECONDS)
 
 
 async def explain_failure_async(problem, code, passed, total):
@@ -147,6 +196,20 @@ async def on_ready():
     print(f"Raybot logged in as {bot.user}")
     if not daily_quiz_task.is_running():
         daily_quiz_task.start()
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Without this, an exception anywhere inside a command coroutine was only
+    printed to the host's own console -- the Discord user who ran the command
+    saw nothing happen at all, with no way to tell a bug from a typo."""
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.BadArgument):
+        await ctx.send(f"{ctx.author.mention} Couldn't parse that — check `!raybothelp` for the right format.")
+        return
+    print(f"Unhandled error in command {ctx.command}: {type(error).__name__}: {error}")
+    await ctx.send(f"{ctx.author.mention} Something went wrong running that command — it's been logged.")
 
 
 @bot.command(name="quiz")
@@ -259,9 +322,17 @@ async def cmd_firelordray(ctx, difficulty: str = None, category: str = None):
             explanation = await explain_failure_async(problem, code, passed, total)
             await author.send(f"Not quite — {passed}/{total} tests passed.\n\n{explanation}")
 
-    db.record_quiz_attempt(score, 5, difficulty=label, category=category, user_name=str(author))
-    same_bucket_past = db.quiz_history_by_bucket(label, key="difficulty")[:-1]  # exclude the one we just recorded
+    # Read past attempts BEFORE recording this one -- reversed, this dropped
+    # the *last row returned* on the assumption it was always this insert,
+    # which only holds with zero concurrency. Any other quiz for the same
+    # difficulty finishing in between (plausible: each question waits up to
+    # 180s) means the dropped row belongs to someone else, and this user's
+    # own new attempt stays counted in their own "average", quietly
+    # inflating or deflating the very comparison being reported to them.
+    # dashboard.py's quiz_result() already does this in the correct order.
+    same_bucket_past = db.quiz_history_by_bucket(label, key="difficulty")
     past_scores = [h["score"] / h["total"] for h in same_bucket_past if h.get("total")]
+    db.record_quiz_attempt(score, 5, difficulty=label, category=category, user_name=str(author))
 
     comparison = ""
     if past_scores:

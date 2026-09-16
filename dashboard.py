@@ -21,7 +21,9 @@ mean to share it, and only on a network where everyone who can reach it is
 someone you trust to run code on this box.
 """
 
+import multiprocessing
 import random
+import secrets
 import sys
 import threading
 from pathlib import Path
@@ -38,8 +40,34 @@ import tutor  # noqa: E402  (ask_raybot, explain_failure — shared with discord
 
 db.init_db()
 
+_SECRET_KEY_FILE = Path(__file__).parent / ".dashboard_secret_key"
+
+
+def _load_or_create_secret_key():
+    """A random, persisted Flask secret -- found in review to have been a
+    static, source-visible string ("raybot-dashboard-local-only").
+
+    Quiz-in-progress state (current question index, running score) lives
+    entirely in the signed session cookie, so this key is the ONLY thing
+    stopping someone from handing themselves a perfect score by crafting
+    their own cookie -- and a hardcoded key anyone can read (in this file,
+    or the public repo it's pushed to) defeats that completely. Especially
+    relevant now that this app binds 0.0.0.0: anyone on the LAN could reach
+    /quiz/result with a forged cookie. Generated once and persisted to disk
+    (not regenerated per run) so restarting the dashboard doesn't silently
+    invalidate every open session.
+    """
+    if _SECRET_KEY_FILE.exists():
+        existing = _SECRET_KEY_FILE.read_text().strip()
+        if existing:
+            return existing
+    key = secrets.token_hex(32)
+    _SECRET_KEY_FILE.write_text(key)
+    return key
+
+
 app = Flask(__name__)
-app.secret_key = "raybot-dashboard-local-only"  # LAN-reachable now, still not internet-facing
+app.secret_key = _load_or_create_secret_key()
 
 BUCKETS = ["easy", "medium", "hard"]
 QUIZ_LENGTH = 5
@@ -1249,19 +1277,46 @@ QUIZ_RESULT_PAGE = STYLE + NAVBAR + """
 """
 
 
+def _run_grading_in_subprocess(problem, code, result_queue):
+    """Top-level (picklable) subprocess entry point -- see grade_with_timeout."""
+    try:
+        result_queue.put(grading.exec_and_test(problem, code))
+    except Exception as exc:  # noqa: BLE001 - must always put *something*, or the parent hangs
+        result_queue.put((0, len(problem.get("tests") or []), f"{type(exc).__name__}: {exc}"))
+
+
 def grade_with_timeout(problem, code, timeout=GRADE_TIMEOUT_SECONDS):
+    """Runs grading.exec_and_test in its own OS process, killed on timeout.
+
+    Was previously a daemon thread joined with a timeout and abandoned if
+    still running on timeout -- Python cannot forcibly stop a thread, so an
+    infinite-loop submission left that thread permanently burning a CPU
+    core in the background even after this function returned to its
+    caller. Each hung submission leaked one more such thread forever; with
+    this dashboard now bound to 0.0.0.0 (reachable by every device on the
+    LAN, see the security note in this module's docstring), enough of them
+    would eventually starve the host. An OS process, unlike a thread, can
+    actually be killed -- this function always returns within `timeout`
+    (plus a small terminate/join overhead) no matter what the submitted
+    code does.
+    """
     code = grading.clean_code(code)
-    result_holder = {}
-
-    def target():
-        result_holder["result"] = grading.exec_and_test(problem, code)
-
-    t = threading.Thread(target=target, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(target=_run_grading_in_subprocess, args=(problem, code, result_queue), daemon=True)
+    process.start()
+    process.join(timeout)
+    if process.is_alive():
+        process.terminate()
+        process.join(2)
+        if process.is_alive():  # pragma: no cover - terminate() not honoured in time, rare
+            process.kill()
+            process.join(1)
         return 0, len(problem["tests"]), f"Timed out after {timeout}s (infinite loop?)."
-    return result_holder.get("result", (0, len(problem["tests"]), "Unknown grading error."))
+    try:
+        return result_queue.get_nowait()
+    except Exception:
+        return 0, len(problem["tests"]), "The submission process exited without reporting a result."
 
 
 def generate_with_timeout(category, bucket, timeout=110):
@@ -1696,4 +1751,11 @@ if __name__ == "__main__":
     # Grading executes submitted code with only a denylist -- not a sandbox --
     # so only run this bound like this while you actually mean to share it,
     # on a network where everyone who can reach it is someone you trust.
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    #
+    # threaded=True: without it, Flask's dev server handles one request at a
+    # time -- a single grading call (up to GRADE_TIMEOUT_SECONDS) or problem
+    # generation (up to 110s) blocked every other LAN user's request for
+    # that whole duration. Safe to turn on now that grading runs in a
+    # genuinely killable subprocess (grade_with_timeout) rather than a
+    # thread that could pile up unbounded under concurrent load.
+    app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)
